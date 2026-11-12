@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Споделена таблица</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;padding:12px;background:#fafafa;color:#222}
+  h1{font-size:18px;margin:0 0 8px}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+  .bar input,.bar button{font-size:14px;padding:6px 10px}
+  #status{font-size:13px;color:#555}
+  .wrap{overflow:auto;max-width:100%}
+  table{border-collapse:collapse;background:#fff}
+  th{background:#eee;font-weight:normal;padding:4px 8px;border:1px solid #ccc;min-width:28px}
+  td{border:1px solid #ccc;padding:0}
+  td input{border:0;width:110px;padding:6px;font-size:14px;box-sizing:border-box;background:transparent}
+  td input:focus{outline:2px solid #2a6df4;outline-offset:-2px;background:#eef4ff}
+</style>
+</head>
+<body>
+<h1>Споделена таблица</h1>
+<div class="bar">
+  <label>Стая: <input id="room" size="10"></label>
+  <button id="go">Влез</button>
+  <button id="copy">Копирай линк</button>
+  <span id="status">…</span>
+</div>
+<div class="wrap"><table id="t"></table></div>
+
+<script>
+const ROWS = 20, COLS = 8;
+let cells = {}, peer = null, conns = [], hostConn = null, isHost = false, code = "", timer = null;
+const $ = id => document.getElementById(id);
+const status = s => $("status").textContent = s;
+
+// Изграждане на таблицата
+const t = $("t");
+let h = "<tr><th></th>";
+for (let c = 0; c < COLS; c++) h += "<th>" + String.fromCharCode(65 + c) + "</th>";
+t.innerHTML = h + "</tr>";
+for (let r = 0; r < ROWS; r++) {
+  const tr = t.insertRow();
+  tr.innerHTML = "<th>" + (r + 1) + "</th>";
+  for (let c = 0; c < COLS; c++) {
+    const td = tr.insertCell(), i = document.createElement("input");
+    i.dataset.k = r + "," + c;
+    i.addEventListener("input", () => edit(i.dataset.k, i.value));
+    td.appendChild(i);
+  }
+}
+const inputs = {};
+t.querySelectorAll("input").forEach(i => inputs[i.dataset.k] = i);
+
+function render() {
+  for (const k in inputs) {
+    if (document.activeElement === inputs[k]) continue;
+    inputs[k].value = cells[k] || "";
+  }
+}
+
+// Локална промяна -> изпращане
+function edit(k, v) {
+  cells[k] = v;
+  const msg = { t: "set", k, v };
+  if (isHost) conns.forEach(c => c.open && c.send(msg));
+  else if (hostConn && hostConn.open) hostConn.send(msg);
+}
+
+function handle(d) {
+  if (d.t === "state") { cells = d.cells; render(); }
+  else if (d.t === "set") {
+    cells[d.k] = d.v;
+    if (inputs[d.k] && document.activeElement !== inputs[d.k]) inputs[d.k].value = d.v;
+  }
+  else if (d.t === "n") status("Свързан · " + d.n + " устройства");
+}
+
+function count() {
+  const n = conns.length + 1;
+  status("Домакин · " + n + " устройства");
+  conns.forEach(c => c.open && c.send({ t: "n", n }));
+}
+
+function retry() {
+  clearTimeout(timer);
+  status("Повторно свързване…");
+  timer = setTimeout(start, 400 + Math.random() * 1500);
+}
+
+function cleanup() {
+  clearTimeout(timer);
+  if (peer) { peer.destroy(); peer = null; }
+  conns = []; hostConn = null; isHost = false;
+}
+
+function start() {
+  cleanup();
+  status("Свързване…");
+  const p = peer = new Peer("tsheet-" + code);
+  p.on("open", () => {
+    isHost = true; count();
+    p.on("connection", c => {
+      conns.push(c);
+      c.on("open", () => { c.send({ t: "state", cells }); count(); });
+      c.on("data", d => { handle(d); conns.forEach(o => o !== c && o.open && o.send(d)); });
+      c.on("close", () => { conns = conns.filter(x => x !== c); count(); });
+    });
+  });
+  p.on("error", e => {
+    if (e.type === "unavailable-id") { p.destroy(); join(); }
+    else { status("Грешка: " + e.type); retry(); }
+  });
+}
+
+function join() {
+  const p = peer = new Peer();
+  p.on("open", () => {
+    const c = hostConn = p.connect("tsheet-" + code, { reliable: true });
+    c.on("open", () => status("Свързан"));
+    c.on("data", handle);
+    c.on("close", retry);
+  });
+  p.on("error", e => retry());
+}
+
+$("go").onclick = () => {
+  const v = $("room").value.trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+  if (!v) return;
+  code = v; location.hash = v;
+  start();
+};
+$("copy").onclick = () => {
+  navigator.clipboard.writeText(location.href);
+  status("Линкът е копиран");
+};
+
+code = location.hash.slice(1) || Math.random().toString(36).slice(2, 7);
+$("room").value = code;
+location.hash = code;
+start();
+</script>
+</body>
+</html>
